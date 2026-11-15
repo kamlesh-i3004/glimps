@@ -11,8 +11,8 @@ Glimps lets photographers share photos with clients without making anyone create
 | User | How they access Glimps |
 |------|------------------------|
 | Photographer | Signs in with Google (identity only, no Drive access) |
-| Client | No login. Opens a share link, optionally entering a PIN |
-| Client's family and guests | No login. Same link |
+| Client (the couple, plus a few family members they choose) | No login. Opens the selection link, optionally entering a PIN, and picks photos |
+| Guests (event attendees) | No login. Open a separate delivery link + PIN and receive only their own photos. Guests never select photos for the album |
 
 ---
 
@@ -38,10 +38,14 @@ Glimps lets photographers share photos with clients without making anyone create
 - Optional expiry date. After it, the link returns "gone".
 - Branding: logo, colours, business name, tagline, website and Instagram.
 
-### Later (design only)
-- **Face-based sharing:** a guest takes a selfie and sees only the photos they appear in.
-- **Live / offline event mode:** photos ingested from SD cards on a laptop, guests join via QR code, works with no internet.
-- **Lightroom export** of selections.
+### Later (designed, not built)
+- **Guest delivery album:** the couple shares a delivery link + PIN with guests (separate from the selection link and PIN). Each guest takes a selfie with the live camera and sees and downloads only the photos they appear in. The selfie is discarded immediately, and the photographer can purge all face data.
+- **Live sharing during the event**, in two modes:
+  - **Live online (first):** the photographer's desktop app uploads previews as photos are taken and originals later. Guests find their photos with a selfie over mobile data or venue WiFi. The venue needs internet.
+  - **Pure offline (later):** the laptop itself serves guests over its own WiFi with no internet. Guests join by QR code. Still blocked on getting the phone camera to work over a local network.
+- **Desktop app for photographers:** background folder upload, downloading selections to folders, Lightroom/Photoshop export via XMP sidecar files.
+
+See [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) for the three flows in detail.
 
 ---
 
@@ -56,9 +60,17 @@ We dropped Drive for three reasons:
 
 How it works:
 - The browser uploads directly to storage with presigned URLs, so photo bytes never pass through the API server.
-- For each photo, Glimps keeps a private original, a preview (max 1600 px, EXIF/GPS stripped, optional watermark) and a thumbnail (max 400 px).
+- For each photo, Glimps keeps a private main file, a preview (max 1600 px, EXIF/GPS stripped, optional watermark) and a thumbnail (max 400 px). In selection albums the main file is a resized ~2560 px master; in delivery albums it is the full-quality original. A photo is never stored twice.
 - The database stores storage keys only. Viewing links are generated on demand and expire after about 10 minutes.
-- Accepted files are JPEG, PNG and WebP up to 30 MB each. Each photographer has a storage quota (5 GB by default).
+- Accepted files are JPEG, PNG and WebP up to 30 MB each.
+- Albums expire automatically (3.5 months on Pro; 14 days for selection and 7 days for delivery on Free), then are deleted after a 7-day grace period.
+
+### Plans (proposed; pricing still being validated with photographers)
+- **Free** (permanent): the desktop app (uploads, local compression, downloading selections, Lightroom XMP export), 10 GB of uploads a month, selection albums kept 14 days, delivery albums kept 7 days with full-gallery browsing only, and a "Made with Glimps" mark. No face search, live or offline mode, branding or portfolio.
+- **Pro** (₹600 a month in India, $6 internationally, before tax, via Razorpay): 50 GB of uploads a month pooled across all albums (about 5 events), 3.5-month retention, guest delivery with face search, live online and offline modes, your own branding.
+- **Add-ons (Pro):** a portfolio website, extra 10 GB upload blocks, longer retention (later).
+- **Studio** (later): per-seat team plan with pooled storage, shared branding and roles.
+- Limits count the bytes uploaded each billing month; deleting photos doesn't give them back. When you reach the limit, new uploads are paused with upgrade options, and existing albums keep working.
 
 ---
 
@@ -94,11 +106,12 @@ Photographer                         Glimps                           Client
 |-------|--------|
 | Frontend | Next.js 16, React 19, Tailwind CSS 4, Zustand (PWA) |
 | Backend | FastAPI, SQLAlchemy 2 (async), Alembic |
-| Database | PostgreSQL on Supabase (session pooler) |
+| Database | PostgreSQL + pgvector. Today: Supabase (session pooler). Target: DigitalOcean Managed PostgreSQL, Bangalore |
 | Storage | Cloudflare R2 (S3-compatible, boto3) / local disk in dev |
 | Image processing | Pillow |
 | Auth | Google OAuth (login only), JWT in an httpOnly cookie |
-| Hosting (planned) | Vercel (frontend), Oracle Cloud VM (backend) |
+| Jobs | A Postgres jobs table plus one worker process |
+| Hosting (decided) | One VM running Next.js, the API and the worker behind Caddy, on a custom domain (`app.` and `api.`). Private beta on Oracle Always Free; paying customers on a paid VM in Bangalore |
 
 ---
 
@@ -133,9 +146,17 @@ Use the Supabase **session pooler** (port 5432) for `DATABASE_URL`, not the tran
 - [ ] Thumbnails, previews, watermark
 - [ ] Client viewing with signed links, download enforcement, album expiry
 - [ ] Frontend: login error page, share-token links, new landing page, upload UI
-- [ ] Later: face-based sharing, live/offline event mode, Lightroom export
+- [ ] Deploy: systemd, Caddy, deploy script, backups with a tested restore, monitoring
+- [ ] Selection polish: per-person picks ("Who's choosing?"), exports
+- [ ] Face indexing + guest delivery albums
+- [ ] Desktop app (folder upload, XMP export)
+- [ ] Live sharing, online mode
+- [ ] Live sharing, pure offline mode
+- [ ] Billing (Razorpay), before anyone is charged
+- [ ] Launch controls: terms of service, report link, admin album-disable switch
+- [ ] Portfolio website (Pro add-on)
 
-See [FEATURES.md](FEATURES.md) for detailed status and [CLAUDE.md](CLAUDE.md) for engineering rules and known bugs.
+See [FEATURES.md](FEATURES.md) for detailed status, [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) for the full design, and [CLAUDE.md](../CLAUDE.md) for engineering rules and known bugs.
 
 ---
 
@@ -143,7 +164,7 @@ See [FEATURES.md](FEATURES.md) for detailed status and [CLAUDE.md](CLAUDE.md) fo
 
 - Original photos are private and served only through short-lived signed links.
 - Previews have EXIF and GPS data stripped.
-- If face matching is added later, faces are biometric data, so Glimps will ask for consent before the selfie step, store only embeddings (never the selfie), discard selfie embeddings after the search, and let photographers purge all face data for an event.
+- If face matching is added later, faces are biometric data, so Glimps will ask for consent before the selfie step, store only embeddings (never the selfie), discard selfie embeddings after the search, and let photographers purge all face data for an event. Face data is deleted with the album at the end of its 3.5-month life.
 - This is intended to align with India's DPDP Act, 2023. Review with a legal professional before commercial use.
 
 ---
