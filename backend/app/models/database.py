@@ -1,7 +1,8 @@
+import secrets
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -48,6 +49,10 @@ class Album(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     slug = Column(String(255), unique=True, nullable=False, index=True)
+    share_token = Column(
+        String(64), unique=True, nullable=False, index=True,
+        default=lambda: secrets.token_urlsafe(32),
+    )
     pin = Column(String(6), nullable=True)
     gdrive_folder_id = Column(String(255), nullable=False)
     gdrive_folder_url = Column(Text, nullable=False)
@@ -113,6 +118,9 @@ class Selection(Base):
     """Tracks photo selection status: yes, maybe, no."""
 
     __tablename__ = "selections"
+    __table_args__ = (
+        UniqueConstraint("photo_id", "client_session_id", name="uq_selection_photo_client"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     album_id = Column(UUID(as_uuid=True), ForeignKey("albums.id"), nullable=False)
@@ -136,6 +144,9 @@ class Favorite(Base):
     """Client's personal favorites — independent of yes/maybe/no selection."""
 
     __tablename__ = "favorites"
+    __table_args__ = (
+        UniqueConstraint("photo_id", "client_session_id", name="uq_favorite_photo_client"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     album_id = Column(UUID(as_uuid=True), ForeignKey("albums.id"), nullable=False)

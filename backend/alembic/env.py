@@ -1,3 +1,4 @@
+import sys
 import asyncio
 from logging.config import fileConfig
 
@@ -12,8 +13,10 @@ from app.models.database import Photographer, Album, Photo, Selection, Favorite,
 config = context.config
 settings = get_settings()
 
-# Override sqlalchemy.url with the actual DATABASE_URL from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Override sqlalchemy.url with the actual DATABASE_URL from settings.
+# Escape % signs so Alembic's SafeConfigParser doesn't choke on passwords
+# containing %, e.g. "p%ssw0rd" → "p%%ssw0rd".
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -34,7 +37,11 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
@@ -51,7 +58,11 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     asyncio.run(run_async_migrations())
+
 
 
 if context.is_offline_mode():

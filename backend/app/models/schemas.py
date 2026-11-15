@@ -64,6 +64,7 @@ class AlbumResponse(BaseModel):
     title: str
     description: str | None
     slug: str
+    share_token: str
     has_pin: bool
     gdrive_folder_url: str
     processing_status: str
@@ -75,24 +76,29 @@ class AlbumResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AlbumPublicResponse(BaseModel):
-    """What clients see — no sensitive data."""
+class PublicPhotographerInfo(BaseModel):
+    name: str
+    business_name: str | None = None
+    tagline: str | None = None
+    logo_url: str | None = None
+    primary_color: str = "#000000"
+    accent_color: str = "#6366f1"
+    website_url: str | None = None
+    instagram_handle: str | None = None
+
+
+class PublicAlbumResponse(BaseModel):
+    """What clients see — no sensitive data (no gdrive_folder_url, no share_token, no pin)."""
 
     id: UUID
     title: str
-    description: str | None
-    processing_status: str
+    description: str | None = None
+    requires_pin: bool
     total_photos: int
+    processing_status: str
     download_enabled: bool
-    selection_limit: int | None
-    photographer_name: str
-    business_name: str | None
-    tagline: str | None
-    logo_url: str | None
-    primary_color: str
-    accent_color: str
-    website_url: str | None
-    instagram_handle: str | None
+    selection_limit: int | None = None
+    photographer: PublicPhotographerInfo
 
 
 # --- Photo ---

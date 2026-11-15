@@ -3,9 +3,8 @@
 import { getGoogleAuthUrl } from "@/lib/api";
 
 export default function Home() {
-  const handleLogin = async () => {
-    const { auth_url } = await getGoogleAuthUrl();
-    window.location.href = auth_url;
+  const handleLogin = () => {
+    window.location.href = `${process.env.NEXT_PUBLIC_API_URL}/api/auth/google/login`;
   };
 
   return (
