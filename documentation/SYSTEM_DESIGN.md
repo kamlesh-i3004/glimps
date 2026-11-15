@@ -1,6 +1,6 @@
 # Glimps: system design
 
-Status: draft v2.1, 15 Nov 2026 (v2.1: database provider settled; D3, D7, D8, D13 and the custom domain decided; "decide by" points added in §15; job fairness rule added in §7.2.1; D24 decided; PROPOSED plans, monthly upload meter, portfolio and launch abuse controls added). Docs only; nothing here is built unless §0 says so. v2 records the owner's decisions on retention, resolution, plan limits, storage, database, hosting, pricing, live sharing and deployment (§15 "Decided") and recomputes §9.
+Status: draft v2.1, 15 Nov 2026 (v2.1: database provider settled; D3, D7, D8, D13 and the custom domain decided; "decide by" points added in §15; job fairness rule added in §7.2.1; D24 decided; PROPOSED plans, monthly upload meter, portfolio and launch abuse controls added; portfolio hosting ladder and R2 as final storage). Docs only; nothing here is built unless §0 says so. v2 records the owner's decisions on retention, resolution, plan limits, storage, database, hosting, pricing, live sharing and deployment (§15 "Decided") and recomputes §9.
 Conventions: **ASSUMPTION** = a guess to be checked. **UNVERIFIED** = a number I could not confirm from a primary source. Product choices that need the owner are in §15, each with a recommended default. `CLAUDE.md` holds the rules; this file holds the reasoning.
 
 ---
@@ -89,8 +89,8 @@ These replace the earlier per-event limits and the 1-event trial.
 | Face search | – | ✔ | ✔ |
 | Live online mode (C1) / offline mode (C2) | – / – | ✔ / ✔ | ✔ |
 | Own branding | – ("Made with Glimps" mark on public pages) | ✔ | shared branding |
-| Portfolio website | – | add-on (§6.5) | – |
-| Add-ons | – | portfolio site; extra upload blocks of 10 GB / month; longer retention (later) | – |
+| Portfolio website | – | basic template site on a free subdomain included (PROPOSED, built after the core product, §6.5) | – |
+| Add-ons | – | portfolio customisation (extra templates, custom domain); extra upload blocks of 10 GB / month; longer retention (later) | – |
 | Accounts | one account per Google login | | roles; needs a workspace layer (§3.3) |
 
 - **Enforcement is server-side.** The plan is read from `photographers.plan`, and the limits come from config keyed by plan name. Pro-only features (face search, live online, branding, portfolio, `find_my_photos_only`) are refused for Free by the API, not just hidden in the UI. Offline mode runs on the laptop, so the desktop app checks the plan through the API when it's online (ASSUMPTION: offline mode stays unlocked for a period after the last successful check, length to be set in the desktop phase).
@@ -163,7 +163,7 @@ flowchart LR
 | API server | Auth, albums, access proofs, presigning, plan limits, selection writes, face search (synchronous, small), enqueueing jobs | FastAPI, SQLAlchemy async, psycopg 3 | the VM, behind Caddy | Postgres, R2 (presign plus HEAD), Google (login only), Razorpay (webhooks, once billing is built) |
 | Job worker | Image derivatives, EXIF stripping, watermark, face indexing, purges, quota reconciliation | Python process (`python -m app.worker`), Pillow, onnxruntime, boto3 | same VM, separate systemd unit | Postgres (job table), R2 |
 | Postgres | System of record: albums, photos (keys, not URLs), selections, face embeddings, jobs, logs | plain Postgres + pgvector, no provider-specific features, so switching is a dump and restore. Today: Supabase (session pooler, port 5432). Target (decided): DigitalOcean Managed PostgreSQL, Bangalore; beta topology is D18 | managed provider, **same city as the API** | – |
-| Object storage | Originals, masters, previews, thumbnails, logos | Cloudflare R2 (S3 API), private bucket. `StorageBackend` stays provider-agnostic (S3 API), so Backblaze B2 can be added later after measuring download speed from Mumbai | Cloudflare | – |
+| Object storage | Originals, masters, previews, thumbnails, logos, portfolio images | **Cloudflare R2 (final choice)**, S3 API, private bucket. `StorageBackend` stays provider-agnostic; Backblaze B2 is only revisited past roughly **1 TB stored**, after a download-speed test from Mumbai | Cloudflare | – |
 | Local storage backend | Same interface as R2, backed by the filesystem; used in dev and in Flow C | Python class; files under `MEDIA_ROOT`; HMAC-signed URLs served by FastAPI | dev machine / laptop | – |
 | Desktop app | Folder-watch upload, selection download, XMP export, Flow C1 live upload (previews first), Flow C2 local server | Tauri (D10) wrapping the web UI plus a bundled Python sidecar running the same FastAPI app with `MODE=local` | photographer laptop | local API; cloud API when online |
 | Local mode | Flow C: guest gallery and face search over WiFi with no internet | same FastAPI code, SQLite (or bundled Postgres; D12), LocalStorage, local vector search | laptop | phones on the LAN |
@@ -195,7 +195,7 @@ erDiagram
   photos ||--o{ guest_grants : ""
   albums ||--o{ jobs : ""
   photographers ||--o{ jobs : ""
-  photographers ||--o| portfolio_sites : "Pro add-on, LATER"
+  photographers ||--o| portfolio_sites : "Pro, LATER"
   albums ||--o{ abuse_reports : "LATER"
 
   photographers {
@@ -324,7 +324,9 @@ erDiagram
   }
   portfolio_sites {
     uuid photographer_id PK
-    string subdomain UK
+    string subdomain UK "one level deep on the portfolio domain"
+    string custom_domain UK "nullable; paid add-on, one per photographer"
+    timestamptz custom_domain_verified_at "DNS check passed"
     string template_id
     jsonb site_config "text, section order, image keys; no custom HTML/JS"
     bool published
@@ -409,7 +411,8 @@ Base: `https://api.<domain>`. Every public route resolves the album **by token o
 | `POST /api/albums/{id}/faces/index` · `DELETE /api/albums/{id}/faces` · `GET /api/albums/{id}/face-searches` | face indexing, purge, search log | 10/min |
 | `GET /api/albums/{id}/jobs` | processing progress | 60/min |
 | `GET /api/photographer/usage` | plan, the month's uploaded bytes vs limit, stored bytes vs ceiling, albums this month, period end | 60/min |
-| `GET/PUT /api/portfolio` · `POST /api/portfolio/images/upload-url` · `/confirm` · `DELETE /api/portfolio/images/{key}` | portfolio site config and images (Pro add-on, §6.5) | 30/min |
+| `GET/PUT /api/portfolio` · `POST /api/portfolio/images/upload-url` · `/confirm` · `DELETE /api/portfolio/images/{key}` · `PUT/DELETE /api/portfolio/custom-domain` | portfolio site config, images and custom domain (§6.5) | 30/min |
+| `GET /internal/tls/allow?domain=` (localhost only, not routed publicly) | Caddy on-demand TLS approval: stored + DNS-verified custom domains only, with our own throttle (§6.5) | N approvals/hour |
 | `POST /api/admin/albums/{id}/disable` · `/enable` · `GET /api/admin/reports` | abuse switch and report queue (admin allow-list, §7.2.2 ASSUMPTION) | – |
 | `POST /api/report` `{target_url, reason, details}` (public, no auth) | "Report this page" link on every public page | 5/hour/IP |
 | `GET /api/sites/{subdomain}` (public) | portfolio config and image URLs for the Next.js site route | 120/min/IP |
@@ -540,8 +543,14 @@ The extension comes from the **detected** content type (magic bytes), not the fi
 - **Purge order.** Delete the DB face rows first (biometric data goes first), then the R2 objects in batches (one DeleteObjects call per 1000 keys), then the photo rows. The job is idempotent: deleting a missing object is a no-op.
 - **Resolution (decided, D5).** Selection albums store ~2560 px masters (resized in the browser or the desktop app before upload) plus preview and thumbnail. Delivery albums store full-quality originals. A photo is stored once and never duplicated between the two album kinds; a delivery album gets its own uploads.
 
-### 6.5 Portfolio website (Pro add-on, PROPOSED)
+### 6.5 Portfolio website (PROPOSED; built after the core product)
 
+**Packaging (PROPOSED).**
+- **Pro includes** a basic template portfolio site on a free subdomain.
+- **Paid add-on:** more customisation, meaning extra templates and a custom domain.
+- **Timing:** built after the core product (phases 1-6, Deploy, Billing and the Flow A/B work). It's **not announced or marketed before it exists.**
+
+**Content.**
 - **Templates.** A few templates ship with the frontend code.
   - **One** Next.js route renders any photographer's site from their `portfolio_sites.site_config`: template id, text, section order and image keys.
   - There's no per-site build and no custom HTML or JS. Text is rendered escaped.
@@ -550,12 +559,38 @@ The extension comes from the **detected** content type (magic bytes), not the fi
   - at most **30 images, 2 MB each**;
   - uploaded with the same presigned flow, then resized by the worker (e.g. ≤ 2400 px long edge, EXIF stripped; ASSUMPTION on size);
   - **excluded from the album expiry purge** (that only deletes `albums/{album_id}/…`);
-  - deleted when the add-on lapses (after a grace, ASSUMPTION) or the account is deleted;
+  - deleted when Pro or the add-on lapses (after a grace, ASSUMPTION) or the account is deleted;
   - counted against the stock ceiling, not the monthly upload meter (ASSUMPTION).
-- **Addresses.**
-  - **First:** a subdomain, `{name}.<domain>`. This needs wildcard DNS and a wildcard TLS certificate in Caddy, via a DNS-01 challenge with a DNS-provider plugin or Caddy's on-demand TLS (ASSUMPTION, settle in the portfolio phase). Next.js middleware maps the `Host` header to the site route.
-  - **Later:** custom domains via Cloudflare for SaaS. Its plans include **100 custom hostnames, then $0.10 per extra hostname per month**, on the Free, Pro and Business Cloudflare plans, up to 50,000 [S28]. That requires the Glimps domain's DNS to be on Cloudflare (ASSUMPTION).
-- **Security note.** Portfolio subdomains share a registrable domain with `app.` and `api.`. That's safe only because sites are rendered by our code with no user HTML or JS. If custom code is ever allowed, serve portfolios from a separate domain.
+  - Images are served from R2 via signed or public-read URLs in every hosting mode below.
+
+**Hosting ladder.**
+
+| Step | What | How | Cost |
+|---|---|---|---|
+| **1. v1: free subdomain** (included in Pro) | `name.<portfolio-domain>` on a **separate portfolio domain** (not the `app.`/`api.` domain) | the portfolio domain's DNS on Cloudflare; **one proxied wildcard record** `*` → the VM. Cloudflare's free **Universal SSL covers the apex and first-level subdomains only** [S29], so names are exactly one level deep (`name.<portfolio-domain>`), **never** `name.sub.<portfolio-domain>`. Cloudflare → origin uses a Cloudflare Origin CA wildcard certificate on Caddy (SSL mode Full (strict); ASSUMPTION on setup). Next.js middleware maps the `Host` header to the site route. Names are validated (`[a-z0-9-]{3,30}`, no leading or trailing hyphen) against a reserved-word list (`www`, `api`, `app`, `admin`, `mail`, …) | a second domain (~$1 / month, UNVERIFIED); Cloudflare Free $0 |
+| **2. Later: custom domain** (paid add-on) | the photographer's own domain, e.g. `janephotos.in` or `www.janephotos.in` | **Caddy on-demand TLS on the VM** (details below). The photographer points an **A record** at our reserved IP (apex) or a **CNAME** at a fixed target such as `domains.<portfolio-domain>` (subdomains). Apex via an A record is **expected to work but UNVERIFIED until tested on one real domain** | Let's Encrypt $0; reserved IP $0 while attached on DigitalOcean [S30] |
+| **3. Interim, before step 2 exists** | the photographer's domain forwards to their subdomain | **registrar URL forwarding** (301) from their domain to `name.<portfolio-domain>`; we only document it in a help page | $0 to us |
+| Fallback option (not planned) | custom domains via **Cloudflare for SaaS** | 100 custom hostnames included, then **$0.10 per hostname per month** [S28]; **no apex proxying and no wildcard custom hostnames below Enterprise** [S31], so `janephotos.in` (apex) would not work on our plan | per hostname |
+
+**Step 2 in detail (Caddy on-demand TLS).**
+- **Approval endpoint.** Caddy asks our API before issuing any certificate. The endpoint approves only a domain that:
+  - is stored in `portfolio_sites.custom_domain` (unique; **one custom domain per photographer**);
+  - belongs to an active Pro + add-on account;
+  - passes a **DNS check** (its A/AAAA records, or CNAME target, resolve to our reserved IP / target). The result is recorded in `custom_domain_verified_at`.
+  - Everything else gets a 4xx, so random hostnames pointed at our IP can't make Caddy issue certificates.
+- **Not public.** Caddy's docs now recommend a **permission module** over a public `ask` URL [S32]. The endpoint listens on `localhost` only (or a unix socket) and is not routed through the public API (ASSUMPTION on exact wiring).
+- **Throttling has to be ours.** Caddy's own on-demand rate limit (`interval`/`burst`) was **deprecated and has been removed** [S32], so the "Caddy issuance throttling" in the brief has to be implemented outside Caddy:
+  - the approval endpoint allows at most N new approvals per hour (ASSUMPTION N = 10);
+  - only verified domains are ever approved;
+  - Let's Encrypt's own per-domain and per-account limits are the outer bound.
+- **Reserved static IP.**
+  - **DigitalOcean:** reserved IPs are **free while assigned to a Droplet**, $5 / month if left unassigned [S30].
+  - **Oracle Always Free:** reportedly allows one reserved public IP per tenancy (community reports only; **UNVERIFIED**, check the tenancy's `reserved-public-ip-count` limit).
+  - The IP must survive a VM rebuild, since photographers' DNS points at it. That's why custom domains wait for the paid VM.
+- **Monitoring.** Alert on certificate issuance or renewal errors in Caddy's logs. Run a daily check that every approved custom domain still resolves to us and serves a valid certificate expiring in more than 14 days (ASSUMPTION). If a domain stops resolving to us, mark it unverified and stop approving it.
+- **Trade-off.** Custom domains **bypass Cloudflare**: no CDN and no DDoS shield for the site's HTML, which comes straight from the VM. Images still come from R2. A traffic spike or attack on one custom domain hits the same VM as the API. Mitigations are Caddy request limits and caching of the rendered pages (ASSUMPTION).
+
+**Security note.** Portfolios live on their own registrable domain, so a portfolio page can never set or read cookies for `app.`/`api.`. Content stays template-rendered with no user HTML or JS.
 
 ---
 
@@ -896,7 +931,11 @@ Recomputed 15 Nov 2026 for the owner's decisions on retention, resolution, plan 
 
 The R2 free tier (10 GB-month) is shared across all photographers and is worth about $0.15 a month, so it's ignored. **Storage is about 90 % of the variable cost; 3.5-month retention is what keeps it low** (the old 12-month model cost ~$1.93 per event).
 
-**Backblaze B2 comparison (decision P4, later option).** Storage would be 8 × 3.75 × $0.00695 = $0.21 per event, a saving of about **$0.24 (₹23) per event**, or $0.60 a month for a typical photographer. Guest egress (~19 GB per 8 GB event, about 2.4×) sits inside B2's 3× allowance at account level and is free through Cloudflare anyway. The saving is under 4 % of revenue per photographer, so B2 is only worth switching to if measured download speed from Mumbai is acceptable.
+**Backblaze B2 comparison (R2 is the final choice; B2 revisited only past ~1 TB stored).**
+- Per typical event, B2 storage would be 8 × 3.75 × $0.00695 = $0.21, a saving of about **$0.24 (₹23)**.
+- Per TB-month, B2 would cost ~$7 against $15 on R2, a saving of **~$8 a month per TB stored**.
+- Guest egress (~2.4× stored) fits inside B2's 3× allowance and is free through Cloudflare anyway.
+- Below ~1 TB stored (roughly 5-13 Pro photographers at steady state, §9.12), the saving is under ~$8 a month, not worth a second provider. Past ~1 TB, run a download-speed test from Mumbai before deciding.
 
 ### 9.5 Postgres size
 
@@ -1013,7 +1052,11 @@ Each maxed Free user costs about $0.17 a month, so one typical Indian Pro user c
 
 - **CPU.** A maxed Free user uploads ~2,500 photos a month at 0.1-0.4 s each, about 4-17 core-minutes. 500 such users is ~35-140 core-hours a month, which one worker slot (~720 hours) can absorb, but it competes with Pro at peak. The fairness rule treats Free and Pro equally (D26).
 - **Not included:** support for Free users, abuse handling, payment fees on add-ons, and add-on revenue (10 GB upload blocks, portfolio).
-- **Pricing for upload blocks (owner decides).** The cost floor for an extra 10 GB a month is ≈ $0.56 a month at Pro retention once it reaches steady state (10 × 3.75 × 0.015). The portfolio add-on costs almost nothing in storage (30 × 2 MB); its cost is the hostname ($0 for the first 100 custom domains, then $0.10 a month each [S28]).
+- **Pricing for upload blocks (owner decides).** The cost floor for an extra 10 GB a month is ≈ $0.56 a month at Pro retention once it reaches steady state (10 × 3.75 × 0.015). - **Portfolio (§6.5).**
+  - **Storage:** almost nothing (≤ 30 × 2 MB per photographer).
+  - **v1 subdomains:** a second domain for portfolios (~$1 a month, UNVERIFIED) on Cloudflare Free ($0), plus a little VM CPU for rendering. That's a fixed cost; add it to §9.8 when the portfolio is built.
+  - **Custom-domain add-on via Caddy:** $0 per domain (Let's Encrypt; the reserved IP is free while attached on DigitalOcean [S30]). The cost is ops time and VM load, since the HTML bypasses Cloudflare.
+  - **Cloudflare for SaaS fallback:** $0.10 per hostname per month after the first 100 [S28].
 
 ---
 
@@ -1034,6 +1077,9 @@ Each maxed Free user costs about $0.17 a month, so one typical Indian Pro user c
 | **Account takeover** | photographer's albums | Google login with verified email only (exists); 24 h JWT; logout clears the cookie. Server-side session revocation is not possible with stateless JWTs; acceptable for now, or add a `token_version` column |
 | **Supply chain / models** | tampered ONNX files | pin model files by SHA-256 in config and verify at load |
 | **Free-hosting abuse** (illegal or infringing content, phishing pages, using Glimps as a free file host) | legal exposure, domain reputation, storage cost | **required before public launch:** (1) terms of service accepted at signup (`tos_accepted_at`, `tos_version`); (2) a "Report this page" link on every public album and portfolio page → `POST /api/report` → `abuse_reports`; (3) an admin switch to disable an album (`admin_disabled_at`; public routes then return 404, and the photographer can't re-enable it); (4) the file-type allow-list (JPEG, PNG, WebP by magic bytes, no executables or archives; SVG logos rasterised). Free plan limits (10 GB / month, 7-14-day retention) cap the damage. Indian intermediary obligations (grievance contact, takedown timelines) need the same legal review as D16 (ASSUMPTION) |
+| **Certificate abuse via on-demand TLS** (anyone points a hostname at our IP to make Caddy request certificates) | Let's Encrypt rate limits exhausted for real customers, resource use | approval endpoint on localhost only; approves only domains stored in `portfolio_sites` **and** DNS-verified; our own throttle on new approvals (Caddy's built-in limiter was removed); certificate-error monitoring (§6.5) |
+| **Custom-domain portfolios bypass Cloudflare** | no CDN or DDoS shield for that HTML; an attack on one domain loads the shared VM | Caddy request limits, cached rendered pages, images still served by R2; portfolio subdomains (step 1) stay behind Cloudflare; Cloudflare for SaaS remains a fallback if this becomes a problem (§6.5) |
+| **Dangling custom domains** (a photographer's DNS still points at us after they leave, or a domain is re-registered by someone else) | serving the wrong site, or a certificate for a domain we no longer own the relationship with | stop approving and serving a domain once its account or add-on lapses, or its DNS check fails; the daily check marks it unverified |
 | **Multiple free accounts** | free-tier farming | one account per Google login (weak on its own); the monthly meter and short Free retention keep the cost per account small (§9.12) |
 
 ### DPDP Act 2023 / DPDP Rules 2025 items (legal review required before charging)
@@ -1223,7 +1269,7 @@ flowchart LR
 | **Deploy** | systemd units, Caddyfile, deploy script, backup and **tested** restore runbook, monitoring, rebuild notes (§11.4); tested on a throwaway VM first, then the Oracle beta VM | 6, custom domain bought, D18 | the move to the paid Bangalore VM by re-running the same scripts |
 | Billing (D19) | Razorpay Subscriptions (UPI AutoPay in India, international cards), webhooks, Free ↔ Pro plan state and billing anchor for `period_start`, add-ons (10 GB upload blocks, portfolio) | Deploy | must exist before anyone is charged; Studio's workspaces later (§3.3) |
 | Launch controls (M5) | terms of service at signup, "Report this page" link and `abuse_reports`, admin album-disable switch, "Made with Glimps" mark on Free public pages, Pro-feature gating checks | Deploy | **required before public launch** (§10) |
-| Portfolio (Pro add-on) | `portfolio_sites`, templates with a licence manifest, one site route, subdomain + wildcard TLS; custom domains later via Cloudflare for SaaS | Billing | – |
+| Portfolio (after the core product) | `portfolio_sites`, templates with a licence manifest, one site route; **step 1:** free subdomains on a separate portfolio domain (proxied wildcard, Universal SSL, one level deep); **step 3 help page:** registrar forwarding; **step 2 (paid add-on, later):** custom domains via Caddy on-demand TLS + localhost approval endpoint + reserved IP + cert monitoring (§6.5) | Billing, paid VM (reserved IP) | not announced before it exists |
 | Flow A polish | participants ("Who's choosing?"), per-person views, export csv/txt, XMP | Deploy | – |
 | Flow B | model eval (D4) → M4, indexing job, consent, search, grants, logs, purge, guest UI with in-app-browser detection | A polish, D4 | `model_version` compatibility with local |
 | Desktop app | Tauri shell, sidecar, folder-watch resumable upload, XMP | Flow B APIs | `MODE=local`; previews-first upload |
@@ -1243,7 +1289,7 @@ Items marked **DECIDED** record the owner's decisions of 15 Nov 2026. Every open
 | 1 | Retention: Pro albums are kept 3.5 months (planning figure); Free selection 14 days and Free delivery 7 days (PROPOSED with the plans); automatic deletion after a **7-day** grace (applies to Free too: ASSUMPTION, D25). A reminder before expiry is optional | §1 Plans, §6.4, §9.1, D21, D23, D25 |
 | 2 | Resolution (D5): selection albums keep ~2560 px masters, delivery albums keep full originals; photos are stored once | §6.4, §9.3 |
 | 3 | ~~Plan limits (D9): per-event caps and 1-event trial~~ **superseded** by the PROPOSED Free / Pro / Studio plans and the monthly upload meter (Free 10 GB, Pro 50 GB pooled; stock ceilings 20 / 200 GB, ASSUMPTION) | §1 Plans, §6.4, §9.12 |
-| 4 | Storage: Cloudflare R2 behind a provider-neutral `StorageBackend` (S3 API); Backblaze B2 only later, after measuring download speed from Mumbai | §2, §9.4 |
+| 4 | **Storage: Cloudflare R2 is the final choice**, behind a provider-neutral `StorageBackend` (S3 API). Backblaze B2 is only revisited past roughly 1 TB stored, after a download-speed test from Mumbai | §2, §9.4 |
 | 5 | **Database: DigitalOcean Managed PostgreSQL + pgvector, Bangalore, $15 / month (settled).** The app stays on plain Postgres, so a later switch is a dump and restore. API and database in the same city | §2, §9.2, §11.1, D18 |
 | 6 | Hosting (D11): one rented VM runs Next.js (self-hosted behind Caddy), the API and the worker. Beta on Oracle Always Free; paying customers on a paid Bangalore VM | §11.1, §9.8 |
 | 7 | Pricing (**PROPOSED**, to be validated with photographers): Pro ₹600 / month in India, $6 / month abroad, before tax, through Razorpay Subscriptions (UPI AutoPay in India); Free is permanent | §1 Plans, §9.9, §9.12, D19 |
@@ -1257,6 +1303,8 @@ Items marked **DECIDED** record the owner's decisions of 15 Nov 2026. Every open
 | 15 | **Custom domain:** required, with `app.` and `api.` as sibling subdomains. Buy it **before the Deploy phase** | §11.3, §11.4, §14 |
 | 16 | **Job fairness:** at most `JOB_MAX_RUNNING_PER_PHOTOGRAPHER` (default 2) running jobs per photographer, work-conserving; claim by kind priority → fewest running → oldest; two-pass claim under an advisory lock with `SKIP LOCKED`; system jobs exempt | §3.2 M1, §7.2.1-7.2.3, §13, §14, D24 |
 | 17 | **D24, single-slot fairness:** after "fewest running", the photographer whose most recent claim (`max(locked_at)`) is oldest goes first, NULL first, then oldest `created_at`; `locked_at` is kept after completion; kind priority stays above fairness | §7.2.1, §7.2.3 T1/T7/T8 |
+| 18 | **Portfolio hosting ladder:** (1) v1 free subdomains `name.<portfolio-domain>` on a separate portfolio domain, one proxied wildcard record, first-level names only; (2) later paid add-on: custom domains via Caddy on-demand TLS with a stored + DNS-verified approval endpoint, one per photographer, our own throttling, a reserved static IP and certificate monitoring (bypasses Cloudflare); (3) interim: registrar URL forwarding. Cloudflare for SaaS is a fallback only | §6.5 |
+| 19 | **Portfolio packaging (PROPOSED):** Pro includes a basic template site on a free subdomain; extra templates and a custom domain are a paid add-on; built after the core product and not announced before it exists | §1 Plans, §6.5 |
 
 ### Still open, and when to decide
 
@@ -1282,6 +1330,8 @@ Items marked **DECIDED** record the owner's decisions of 15 Nov 2026. Every open
 | D25 Plan-change and Free-grace rules | existing albums keep their `expires_at` on upgrade or downgrade; the 7-day grace applies to Free too; on downgrade, Pro-only features switch off for new albums and face data on Pro albums stays until expiry | before Billing |
 | D26 Should fairness favour Pro over Free jobs? | no for now (equal per photographer); revisit if Free load delays Pro at peak (watch `job_queue_stats`) | before public launch |
 | Plan numbers (PROPOSED) | validate ₹600 / $6, Free 10 GB and 14 / 7-day retention, Pro 50 GB, ceilings 20 / 200 GB and 20 albums / month with photographers | before Billing |
+| Portfolio domain name | buy a separate short domain for portfolios, DNS on Cloudflare | before the portfolio phase |
+| Custom-domain prerequisites | test apex-via-A-record on one real domain; confirm the reserved IP on the chosen VM (Oracle limit UNVERIFIED; DigitalOcean free while attached); pick N for the approval throttle | before building portfolio step 2 |
 
 ### Details
 
@@ -1376,3 +1426,7 @@ Added in v2 (web search, 15 Nov 2026):
 - [S26] Razorpay recurring billing, UPI AutoPay and Subscriptions fees (Razorpay blog): https://razorpay.com/blog/cheapest-payment-gateway-for-recurring-billing-e-nach-upi-autopay-and-subscription/ and https://razorpay.com/terms/subscription-plans/
 - [S27] USD/INR in early Nov 2026: https://currencybeacon.com/rates/USD/INR and https://hdfcsky.com/news/rupee-falls-10-paise-to-close-at-94-86-against-us-dollar
 - [S28] Cloudflare for SaaS plans (official): https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/ and quotas/billing: https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/quotas-and-billing/
+- [S29] Cloudflare Universal SSL limitations (apex + first-level subdomains only): https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations
+- [S30] DigitalOcean Reserved IPs pricing (free while assigned; $5/month unassigned IPv4): https://docs.digitalocean.com/products/networking/reserved-ips/details/pricing
+- [S31] Cloudflare for SaaS plans (apex proxying and wildcard custom hostnames are Enterprise): https://developers.cloudflare.com/ssl/ssl-for-saas/plans and https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/start/advanced-settings/apex-proxying/setup/
+- [S32] Caddy on-demand TLS: rate_limit deprecated and removed, `ask` superseded by permission modules (Caddy source and changelog mirrors): https://remotebranch.eu/Stowage/caddy/src/branch/testing-updates/modules/caddytls/ondemand.go and https://ark.sudovanilla.org/Infrastructure/caddy/commit/080db938170ce154def7c6eb860634ffc6168c1c ; official docs: https://caddyserver.com/docs/automatic-https#on-demand-tls (not fetched; UNVERIFIED which release removed the limiter)

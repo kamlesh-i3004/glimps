@@ -41,7 +41,7 @@ Last reviewed: 15 Nov 2026, after recording the decisions on retention, plans, p
 | 📋 | Sanity caps | 30 MB per file; 20 albums a month (assumption) |
 | 📋 | Usage display (`GET /api/photographer/usage`) | Phase 3 |
 | 📋 | Plan gating (Free vs Pro) | Face search, live and offline modes, branding, portfolio and find-my-photos-only are Pro-only, enforced on the server |
-| 📋 | Paid add-ons: extra 10 GB upload blocks, portfolio | Needs the billing phase |
+| 📋 | Paid add-ons: extra 10 GB upload blocks, portfolio customisation (extra templates, custom domain) | Needs the billing phase |
 | 📋 | Cover photo | |
 | 📋 | Filename list export (.txt/.csv) | |
 | 📋 | Selection report (exportable) | |
@@ -57,6 +57,7 @@ Last reviewed: 15 Nov 2026, after recording the decisions on retention, plans, p
 | ❌ | Google Drive folder import + indexing | Dropped. Code is still present and fails; it is removed in phase 2 |
 | ❌ | Album reindex from Drive | Removed with the above |
 | 🔧 | Storage layer (`local` / `r2`) | Phase 2 |
+| 📋 | Storage provider | Cloudflare R2 (final). Backblaze B2 revisited only past ~1 TB stored, after a Mumbai download-speed test |
 | 📋 | Direct-to-storage presigned upload (multipart) | Phase 3. JPEG/PNG/WebP, max 30 MB, 50 files per request |
 | 📋 | Server-generated object keys | `albums/{album_id}/{photo_id}/original.ext` |
 | 📋 | Selection masters (~2560 px) vs delivery originals | Selection albums keep resized masters; delivery albums keep full originals; never stored twice |
@@ -116,8 +117,10 @@ Last reviewed: 15 Nov 2026, after recording the decisions on retention, plans, p
 | 🟡 | Business name, tagline, colours, website, Instagram | |
 | 🟡 | Logo upload | Stored as base64 in the DB today; moves to object storage |
 | 🟡 | Live preview in settings | |
-| 🔮 | Portfolio website (Pro add-on) | A few templates rendered by one route from a per-photographer config; up to 30 images (2 MB each), excluded from album expiry; template sample images royalty-free or owned, with licences recorded; subdomain first |
-| 🔮 | Custom domains for portfolios | Later, via Cloudflare for SaaS (100 hostnames included, then $0.10 / month each) |
+| 🔮 | Portfolio website (included in Pro, PROPOSED) | Basic template site on a free subdomain `name.<portfolio-domain>` (separate portfolio domain, one proxied wildcard record, first-level names only). A few templates rendered by one route from a per-photographer config; up to 30 images (2 MB each), excluded from album expiry; template sample images royalty-free or owned, with licences recorded. Built after the core product; not announced before it exists |
+| 🔮 | Portfolio customisation add-on | Extra templates; a custom domain (one per photographer) via Caddy on-demand TLS with a verified-domains approval endpoint, our own throttling, a reserved static IP and certificate monitoring. Custom domains bypass Cloudflare (no CDN or DDoS shield for the HTML). Apex via A record untested |
+| 🔮 | Interim: domain forwarding help page | Photographer forwards their own domain to their Glimps subdomain at the registrar |
+| 🔮 | Fallback: Cloudflare for SaaS | Not planned; 100 hostnames included then $0.10 / month each; no apex or wildcard below Enterprise |
 | 📋 | "Made with Glimps" mark | On Free plan public pages |
 
 ## Platform
@@ -169,6 +172,7 @@ Build order: phases 2-6, then Deploy, then Flow A polish, then face indexing + F
 | Delivery albums | full-gallery browsing only | ✔, incl. face search | ✔ |
 | Live online / offline modes | – | ✔ | ✔ |
 | Branding | "Made with Glimps" mark | own branding | shared branding, roles |
-| Add-ons | – | portfolio site, extra 10 GB upload blocks, longer retention (later) | – |
+| Portfolio site | – | basic template, free subdomain (proposed) | – |
+| Add-ons | – | portfolio customisation (extra templates, custom domain), extra 10 GB upload blocks, longer retention (later) | – |
 
 Payments through Razorpay Subscriptions (UPI AutoPay in India). Grace after expiry: 7 days. Cost model and break-even: SYSTEM_DESIGN §9.12.
